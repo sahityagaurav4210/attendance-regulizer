@@ -1,0 +1,112 @@
+name: attendance-regulizer ci/cd pipeline
+
+on:
+  push:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        node-version: [20.x]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setting up the things
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Installing dependencies
+        run: npm install
+
+      - name: Building the source code
+        run: npm run build
+
+      - name: Quality gate analysis
+        env:
+          SONARQUBE_TOKEN: ${{ secrets.SONARQUBE_SECRET }}
+          SONAR_HOST_URL: ${{ vars.SONARQUBE_HOST }}
+        uses: sonarsource/sonarcloud-github-action@master
+        with:
+          args: >
+            -Dsonar.host.url=${SONAR_HOST_URL}
+            -Dsonar.token=${SONARQUBE_TOKEN}
+            -Dsonar.qualitygate.wait=true
+
+      - name: Preparing the development image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          VITE_APP_VERSION: ${{ secrets.VITE_APP_VERSION}}
+          VITE_APP_DEF_LANG_CODE: ${{ secrets.VITE_APP_DEF_LANG_CODE }}
+        run: |
+          docker build --build-arg VITE_APP_VERSION=${VITE_APP_VERSION} --build-arg VITE_APP_DEF_LANG_CODE=${VITE_APP_DEF_LANG_CODE} -t portfolio-dev-attendance-regulizer .
+          docker tag portfolio-dev-attendance-regulizer ${DOCKER_USERNAME}/attendance-dev-regulizer:latest
+
+      - name: Publishing the development image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_SECRET }}
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker login -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}
+          docker push ${DOCKER_USERNAME}/attendance-dev-regulizer:latest
+
+      - name: Preparing the production image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          VITE_APP_VERSION: ${{ secrets.VITE_APP_VERSION}}
+          VITE_APP_DEF_LANG_CODE: ${{ secrets.VITE_APP_DEF_LANG_CODE }}
+          GH_PWD: ${{ secrets.GH_SECRET }}
+          GH_USERNAME: ${{ vars.GH_USERNAME }}
+        run: |
+          docker build --build-arg VITE_APP_VERSION=${VITE_APP_VERSION} --build-arg VITE_APP_DEF_LANG_CODE=${VITE_APP_DEF_LANG_CODE} -t ${DOCKER_USERNAME}/attendance-regulizer:${VITE_APP_VERSION} -t ghcr.io/${GH_USERNAME}/attendance-regulizer:${VITE_APP_VERSION} .
+
+      - name: Publishing the production image
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+          DOCKER_PASSWORD: ${{ secrets.DOCKER_SECRET }}
+          VITE_APP_VERSION: ${{ secrets.VITE_APP_VERSION}}
+          GH_PWD: ${{ secrets.GH_SECRET }}
+          GH_USERNAME: ${{ vars.GH_USERNAME }}
+        if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+        run: |
+          echo "Logging and pushing the image to DockerHub"
+
+          docker login -u ${DOCKER_USERNAME} -p ${DOCKER_PASSWORD}
+          docker push ${DOCKER_USERNAME}/attendance-regulizer:${VITE_APP_VERSION}
+
+          echo "Logging and pushing the image to GHCR"
+
+          docker login ghcr.io -u ${GH_USERNAME} -p ${GH_PWD}
+          docker push ghcr.io/${GH_USERNAME}/attendance-regulizer:${VITE_APP_VERSION}
+
+      - name: Deploying the code to development server
+        env:
+          VITE_APP_VERSION: ${{ secrets.VITE_APP_VERSION }}
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          npm install -g caprover
+          caprover deploy \
+          --host ${{ secrets.CAPROVER_HOST }} \
+          -p ${{ secrets.CAPROVER_PWD }} \
+          --imageName ${{ secrets.DOCKER_USERNAME }}/attendance-dev-regulizer:${VITE_APP_VERSION} \
+          --appName attendance-dev-regulizer
+
+      - name: Deploying the code to production server
+        env:
+          VITE_APP_VERSION: ${{ secrets.VITE_APP_VERSION }}
+        if: github.event_name == 'push' && github.ref == 'refs/heads/release'
+        run: |
+          npm install -g caprover
+          caprover deploy \
+          --host ${{ secrets.CAPROVER_PROD_HOST }} \
+          -p ${{ secrets.CAPROVER_PROD_PWD }} \
+          --imageName ${{ secrets.DOCKER_USERNAME }}/attendance-regulizer:${VITE_APP_VERSION} \
+          --appName attendance-regulizer
