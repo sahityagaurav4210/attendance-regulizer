@@ -96,7 +96,7 @@ jobs:
           caprover deploy \
           --host ${{ secrets.CAPROVER_HOST }} \
           -p ${{ secrets.CAPROVER_PWD }} \
-          --imageName ${{ secrets.DOCKER_USERNAME }}/attendance-dev-regulizer:${VITE_APP_VERSION} \
+          --imageName ${{ secrets.DOCKER_USERNAME }}/attendance-dev-regulizer:latest \
           --appName attendance-dev-regulizer
 
       - name: Deploying the code to production server
